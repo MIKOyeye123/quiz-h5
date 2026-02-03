@@ -1,0 +1,338 @@
+/* 响应式布局基础样式 */
+.quiz-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 12px 40px;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background-color: #f5f5f5;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.quiz-card {
+  background-color: #ffffff;
+  border-radius: 12px;
+  padding: 16px 14px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  margin-bottom: 16px;
+}
+
+.quiz-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 16px;
+}
+
+.quiz-subtitle {
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.quiz-button-primary {
+  width: 100%;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border-radius: 999px;
+  border: none;
+  font-size: 16px;
+  font-weight: 500;
+  color: #ffffff;
+  background: linear-gradient(135deg, #1677ff 0%, #4096ff 50%, #69b1ff 100%);
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.4);
+  cursor: pointer;
+}
+
+.quiz-button-secondary {
+  width: 100%;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+  border-radius: 999px;
+  border: 1px solid #d9d9d9;
+  font-size: 16px;
+  font-weight: 500;
+  color: #111827;
+  background-color: #ffffff;
+  cursor: pointer;
+}
+
+.quiz-link-small {
+  font-size: 13px;
+  color: #1677ff;
+  cursor: pointer;
+}
+
+.quiz-option-button {
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  border: 1px solid #d9d9d9;
+  background-color: #ffffff;
+  text-align: left;
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.quiz-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background-color: #f5f5f5;
+  font-size: 12px;
+  color: #666;
+  margin-right: 8px;
+}
+
+.quiz-feedback-box {
+  margin-top: 12px;
+  padding: 10px 10px 8px;
+  border-radius: 10px;
+  background-color: #f5f5f5;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.quiz-favorite-button {
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid #ffd6e7;
+  background-color: #fff0f6;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.quiz-button-next {
+  width: 100%;
+  padding: 11px 16px;
+  border-radius: 999px;
+  border: none;
+  margin-top: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #ffffff;
+  background: linear-gradient(135deg, #52c41a 0%, #73d13d 50%, #95de64 100%);
+  box-shadow: 0 4px 10px rgba(82, 196, 26, 0.4);
+  cursor: pointer;
+}
+
+.quiz-button-next:disabled {
+  background-color: #d9d9d9;
+  background: #d9d9d9;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* 响应式布局：桌面端两列 */
+@media (min-width: 768px) {
+  .quiz-container {
+    padding: 24px 20px 40px;
+  }
+
+  .quiz-card {
+    padding: 20px 18px;
+    margin-bottom: 20px;
+  }
+
+  .quiz-title {
+    font-size: 26px;
+    margin-bottom: 20px;
+  }
+
+  .quiz-subtitle {
+    font-size: 18px;
+    margin-bottom: 16px;
+  }
+
+  .quiz-button-primary,
+  .quiz-button-secondary {
+    padding: 14px 18px;
+    font-size: 17px;
+  }
+
+  .quiz-option-button {
+    padding: 12px 14px;
+    font-size: 16px;
+  }
+
+  .quiz-link-small {
+    font-size: 14px;
+  }
+
+  .quiz-feedback-box {
+    padding: 12px 14px;
+    font-size: 15px;
+  }
+
+  .quiz-favorite-button {
+    padding: 10px 12px;
+    font-size: 15px;
+  }
+
+  .quiz-button-next {
+    padding: 13px 18px;
+    font-size: 16px;
+  }
+
+  /* 两列布局容器 */
+  .quiz-layout-two-column {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  /* Practice 视图：左侧题目，右侧解析 */
+  .quiz-practice-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .quiz-practice-left {
+    /* 左侧：题目和选项 */
+  }
+
+  .quiz-practice-right {
+    /* 右侧：解析和考点复盘 */
+    position: sticky;
+    top: 20px;
+  }
+
+  /* Import 视图：左侧上传，右侧预览 */
+  .quiz-import-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .quiz-import-left {
+    /* 左侧：上传区域 */
+  }
+
+  .quiz-import-right {
+    /* 右侧：预览列表 */
+    position: sticky;
+    top: 20px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+  }
+}
+
+/* 手机端：单列布局 */
+@media (max-width: 767px) {
+  .quiz-layout-two-column,
+  .quiz-practice-layout,
+  .quiz-import-layout {
+    display: block;
+  }
+
+  .quiz-practice-right,
+  .quiz-import-right {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
+}
+
+/* 题目内容区域 */
+.quiz-question-text {
+  font-size: 17px;
+  font-weight: 500;
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+@media (min-width: 768px) {
+  .quiz-question-text {
+    font-size: 18px;
+    margin-bottom: 16px;
+  }
+}
+
+/* 选项解析区域 */
+.quiz-option-explanation {
+  margin-top: 6px;
+  margin-bottom: 12px;
+  padding-left: 32px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #666;
+}
+
+@media (min-width: 768px) {
+  .quiz-option-explanation {
+    font-size: 14px;
+    padding-left: 36px;
+  }
+}
+
+/* 考点复盘模块 */
+.quiz-review-box {
+  margin-top: 16px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background-color: #f0f7ff;
+  border: 1px solid #91caff;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+@media (min-width: 768px) {
+  .quiz-review-box {
+    padding: 16px 18px;
+    font-size: 15px;
+    margin-top: 20px;
+  }
+}
+
+.quiz-review-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #1677ff;
+}
+
+@media (min-width: 768px) {
+  .quiz-review-title {
+    font-size: 16px;
+    margin-bottom: 12px;
+  }
+}
+
+/* 导入页面样式 */
+.quiz-upload-area {
+  border: 2px dashed #d9d9d9;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  background-color: #fafafa;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.quiz-upload-area.dragging {
+  border-color: #1677ff;
+  background-color: #f0f7ff;
+}
+
+@media (min-width: 768px) {
+  .quiz-upload-area {
+    padding: 50px 30px;
+  }
+}
+
+/* 预览列表 */
+.quiz-preview-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+@media (min-width: 768px) {
+  .quiz-preview-list {
+    max-height: calc(100vh - 200px);
+  }
+}
