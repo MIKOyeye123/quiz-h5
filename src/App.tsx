@@ -1,6 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { parseDocxQuestions } from './utils/parseDocx';
 import type { ParsedQuestion } from './utils/parseDocx';
+import { supabase } from './lib/supabase';
+import { Auth } from './components/Auth';
+import type { User } from '@supabase/supabase-js';
 import './App.css';
 
 type View = 'home' | 'practice' | 'wrongBook' | 'import' | 'library' | 'notes';
@@ -28,6 +31,17 @@ type AnswerRecord = {
   };
 };
 
+// 刷题模式
+type PracticeMode = 'sequential' | 'random';
+
+// 进度数据
+type ProgressData = {
+  lastIndex: number; // 上次刷到的题目索引
+  totalDone: number; // 总共做过的题数
+  correctCount: number; // 正确题数
+  updatedAt: number; // 更新时间
+};
+
 // 复习笔记数据结构
 type ChapterNotes = {
   chapterNo: number;
@@ -43,7 +57,10 @@ type NotesData = {
   [chapterNo: number]: ChapterNotes;
 };
 
-const QUESTIONS: Question[] = [
+// 默认题目数据已迁移到 Supabase，不再使用本地数据
+// 如需保留作为备用，可以取消注释以下代码
+/*
+const DEFAULT_QUESTIONS: Question[] = [
   {
     id: '1',
     question: '在浏览器中，以下哪种方式可以输出内容到控制台？',
@@ -295,11 +312,12 @@ const QUESTIONS: Question[] = [
     }
   }
 ];
+*/
 
 const OPTION_LABELS: ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
 const FAVORITE_STORAGE_KEY = 'quiz_h5_favorites';
-const QUESTIONS_STORAGE_KEY = 'quiz_questions_v1';
 const NOTES_STORAGE_KEY = 'quiz_notes_v1';
+const PROGRESS_STORAGE_KEY = 'quiz_progress_v1';
 
 const App: React.FC = () => {
   const [view, setView] = useState<View>('home');
@@ -309,7 +327,21 @@ const App: React.FC = () => {
     () => new Set<string>()
   );
   const [answerRecords, setAnswerRecords] = useState<AnswerRecord>({});
-  const [questions, setQuestions] = useState<Question[]>(QUESTIONS);
+  const [questions, setQuestions] = useState<Question[]>([]);
+  
+  // 新增状态
+  const [practiceMode, setPracticeMode] = useState<PracticeMode>('sequential'); // 刷题模式
+  const [shuffledIndices, setShuffledIndices] = useState<number[]>([]); // 随机模式的题目索引
+  const [progress, setProgress] = useState<ProgressData>({
+    lastIndex: 0,
+    totalDone: 0,
+    correctCount: 0,
+    updatedAt: Date.now()
+  });
+  
+  // 认证状态
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   
   // 章节筛选状态
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null); // null 表示全部章节
@@ -324,29 +356,100 @@ const App: React.FC = () => {
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 读取题目数据
+  // 初始化认证状态
+  useEffect(() => {
+    // 检查当前会话
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      setLoading(false);
+    });
+
+    // 监听认证状态变化
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        // 登录后加载题目
+        loadQuestions();
+      } else {
+        // 登出后清空题目
+        setQuestions([]);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 从 Supabase 加载题目
+  const loadQuestions = async () => {
+    try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!currentUser) {
+        setQuestions([]);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      // 转换数据库格式到应用格式
+      const convertedQuestions: Question[] = (data || []).map((q) => ({
+        id: q.id,
+        question: q.question,
+        options: q.options,
+        answer: q.answer,
+        optionExplanations: q.option_explanations,
+        chapterNo: q.chapter_no,
+        chapterTitle: q.chapter_title || undefined,
+        review: {
+          chapter: q.review.chapter,
+          concept: q.review.concept,
+          confusionPoint: q.review.confusion_point,
+          errorPronePoint: q.review.error_prone_point
+        }
+      }));
+
+      setQuestions(convertedQuestions);
+    } catch (error) {
+      console.error('加载题目失败:', error);
+      setQuestions([]);
+    }
+  };
+
+  // 用户登录后加载题目
+  useEffect(() => {
+    if (user) {
+      loadQuestions();
+    }
+  }, [user]);
+
+  // 读取进度数据
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(QUESTIONS_STORAGE_KEY);
+      const stored = localStorage.getItem(PROGRESS_STORAGE_KEY);
       if (stored) {
-        const arr: Question[] = JSON.parse(stored);
-        if (Array.isArray(arr) && arr.length > 0) {
-          setQuestions(arr);
-        }
+        const data: ProgressData = JSON.parse(stored);
+        setProgress(data);
       }
     } catch {
       // ignore
     }
   }, []);
 
-  // 保存题目数据到 localStorage
+  // 保存进度数据到 localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(QUESTIONS_STORAGE_KEY, JSON.stringify(questions));
+      localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
     } catch {
       // ignore
     }
-  }, [questions]);
+  }, [progress]);
 
   // 读取收藏状态
   useEffect(() => {
@@ -477,21 +580,25 @@ const App: React.FC = () => {
       // 作答后记录复习笔记
       recordReviewNote(question);
       
+      // 更新进度
+      setProgress(prevProgress => ({
+        lastIndex: currentIndex,
+        totalDone: prevProgress.totalDone + 1,
+        correctCount: prevProgress.correctCount + (isCorrect ? 1 : 0),
+        updatedAt: Date.now()
+      }));
+      
       return newRecord;
     });
   };
 
-  const handleNextPractice = () => {
-    // 清空当前题的答案记录
-    const currentQuestion = filteredQuestions[currentIndex];
-    if (currentQuestion) {
-      setAnswerRecords(prev => {
-        const next = { ...prev };
-        delete next[currentQuestion.id];
-        return next;
-      });
+  const handlePrevPractice = () => {
+    if (currentIndex > 0) {
+      setCurrentIndex(currentIndex - 1);
     }
-    
+  };
+
+  const handleNextPractice = () => {
     if (currentIndex < filteredQuestions.length - 1) {
       setCurrentIndex(currentIndex + 1);
     } else {
@@ -528,12 +635,39 @@ const App: React.FC = () => {
     return questions.filter(q => q.chapterNo === selectedChapter);
   }, [questions, selectedChapter]);
 
-  // 章节筛选变化时，重置当前题索引
+  // 获取当前显示的题目（考虑随机模式）
+  const getCurrentQuestion = (index: number): Question | undefined => {
+    if (practiceMode === 'random' && shuffledIndices.length > 0) {
+      const actualIndex = shuffledIndices[index];
+      return filteredQuestions[actualIndex];
+    }
+    return filteredQuestions[index];
+  };
+
+  // 获取当前题目
+  const currentQuestion = getCurrentQuestion(currentIndex);
+
+  // 生成随机题目序列
+  const generateShuffledIndices = (length: number): number[] => {
+    const indices = Array.from({ length }, (_, i) => i);
+    // Fisher-Yates 洗牌算法
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [indices[i], indices[j]] = [indices[j], indices[i]];
+    }
+    return indices;
+  };
+
+  // 章节筛选变化时，重置当前题索引和随机序列
   useEffect(() => {
     if (view === 'practice') {
       setCurrentIndex(0);
+      // 如果是随机模式，生成新的随机序列
+      if (practiceMode === 'random' && filteredQuestions.length > 0) {
+        setShuffledIndices(generateShuffledIndices(filteredQuestions.length));
+      }
     }
-  }, [selectedChapter, view]);
+  }, [selectedChapter, view, practiceMode, filteredQuestions.length]);
 
   // WrongBook 的索引容错：列表变化时重置
   useEffect(() => {
@@ -545,18 +679,14 @@ const App: React.FC = () => {
     }
   }, [wrongBookIndex, wrongOrFavoriteQuestions.length]);
 
+  const handlePrevWrongBook = () => {
+    if (wrongBookIndex > 0) {
+      setWrongBookIndex(wrongBookIndex - 1);
+    }
+  };
+
   const handleNextWrongBook = () => {
     if (wrongOrFavoriteQuestions.length === 0) return;
-    
-    // 清空当前题的答案记录
-    const currentQuestion = wrongOrFavoriteQuestions[wrongBookIndex];
-    if (currentQuestion) {
-      setAnswerRecords(prev => {
-        const next = { ...prev };
-        delete next[currentQuestion.id];
-        return next;
-      });
-    }
     
     if (wrongBookIndex < wrongOrFavoriteQuestions.length - 1) {
       setWrongBookIndex(wrongBookIndex + 1);
@@ -639,7 +769,7 @@ const App: React.FC = () => {
     });
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     const toImport = parsedQuestions
       .filter((_, idx) => selectedForImport.has(idx))
       .map(q => {
@@ -663,16 +793,51 @@ const App: React.FC = () => {
       return;
     }
 
-    // 追加到现有题目列表
-    setQuestions(prev => [...prev, ...toImport]);
-    
-    // 重置导入状态
-    setParsedQuestions([]);
-    setSelectedForImport(new Set());
-    setImportErrors('');
-    
-    alert(`成功导入 ${toImport.length} 道题目！`);
-    setView('home');
+    // 检查用户是否登录
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (!currentUser) {
+      setImportErrors('请先登录');
+      return;
+    }
+
+    try {
+      // 转换为 Supabase 数据库格式
+      const insertData = toImport.map(q => ({
+        user_id: currentUser.id,
+        question: q.question,
+        options: q.options,
+        answer: q.answer,
+        option_explanations: q.optionExplanations,
+        chapter_no: q.chapterNo,
+        chapter_title: q.chapterTitle || null,
+        review: {
+          chapter: q.review.chapter,
+          concept: q.review.concept,
+          confusion_point: q.review.confusionPoint,
+          error_prone_point: q.review.errorPronePoint
+        }
+      }));
+
+      const { error } = await supabase
+        .from('questions')
+        .insert(insertData);
+
+      if (error) throw error;
+
+      // 重新加载题目列表
+      await loadQuestions();
+      
+      // 重置导入状态
+      setParsedQuestions([]);
+      setSelectedForImport(new Set());
+      setImportErrors('');
+      
+      alert(`成功导入 ${toImport.length} 道题目！`);
+      setView('home');
+    } catch (error: any) {
+      console.error('导入失败:', error);
+      setImportErrors(error.message || '导入失败，请重试');
+    }
   };
 
   // 删除题目
@@ -736,7 +901,7 @@ const App: React.FC = () => {
     const record = answerRecords[question.id];
     const hasAnswered = !!record;
 
-    return (
+  return (
       <div className="quiz-card">
         <div style={{ marginBottom: 8 }}>
           <span className="quiz-tag">
@@ -875,8 +1040,71 @@ const App: React.FC = () => {
     );
   };
 
+  // 处理退出登录
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setView('home');
+  };
+
+  // 路由保护：未登录时禁止进入导入/刷题页
+  useEffect(() => {
+    if (!loading && !user) {
+      if (view === 'import' || view === 'practice') {
+        setView('home');
+      }
+    }
+  }, [user, loading, view]);
+
+  // 如果正在加载，显示加载中
+  if (loading) {
+    return (
+      <div className="quiz-container">
+        <div style={{ textAlign: 'center', padding: '40px' }}>
+          <div style={{ fontSize: 16, color: '#666' }}>加载中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // 如果未登录，显示登录页
+  if (!user) {
+    return <Auth onAuthSuccess={() => setView('home')} />;
+  }
+
   return (
     <div className="quiz-container">
+      {/* 用户信息栏 */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 16,
+          padding: '12px 16px',
+          backgroundColor: '#ffffff',
+          borderRadius: 8,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.06)'
+        }}
+      >
+        <div style={{ fontSize: 14, color: '#666' }}>
+          当前用户：<span style={{ color: '#1677ff', fontWeight: 500 }}>{user.email}</span>
+        </div>
+        <button
+          onClick={handleSignOut}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 6,
+            border: '1px solid #d9d9d9',
+            backgroundColor: '#ffffff',
+            color: '#666',
+            fontSize: 13,
+            cursor: 'pointer'
+          }}
+        >
+          退出
+        </button>
+      </div>
+
       <div className="quiz-title">刷题 H5 Demo</div>
 
       {view === 'home' && (
@@ -892,15 +1120,92 @@ const App: React.FC = () => {
               }}
             >
               简单的刷题 H5 Demo，支持单选题练习、收藏与错题本。
-      </div>
+            </div>
+
+            {/* 进度统计卡片 */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                gap: 12,
+                marginBottom: 16
+              }}
+            >
+              {/* 刷题进度 */}
+              <div
+                style={{
+                  padding: '16px',
+                  borderRadius: 8,
+                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  color: '#ffffff',
+                  boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)'
+                }}
+              >
+                <div style={{ fontSize: 13, opacity: 0.9, marginBottom: 8 }}>
+                  📚 刷题进度
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>
+                  {progress.totalDone} / {questions.length}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.85 }}>
+                  正确率：{progress.totalDone > 0 
+                    ? Math.round((progress.correctCount / progress.totalDone) * 100) 
+                    : 0}%
+                </div>
+              </div>
+
+              {/* 错题进度 */}
+              <div
+                style={{
+                  padding: '16px',
+                  borderRadius: 8,
+                  background: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+                  color: '#ffffff',
+                  boxShadow: '0 4px 12px rgba(245, 87, 108, 0.3)'
+                }}
+              >
+                <div style={{ fontSize: 13, opacity: 0.9, marginBottom: 8 }}>
+                  ❌ 错题统计
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 700, marginBottom: 4 }}>
+                  {wrongIdSet.size}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.85 }}>
+                  收藏题目：{favorites.size} 道
+                </div>
+              </div>
+            </div>
+
             <button
               className="quiz-button-primary"
               onClick={() => {
+                if (!user) {
+                  alert('请先登录');
+                  return;
+                }
+                setView('practice');
+                // 从上次进度继续
+                if (progress.lastIndex > 0 && progress.lastIndex < filteredQuestions.length) {
+                  setCurrentIndex(progress.lastIndex);
+                } else {
+                  setCurrentIndex(0);
+                }
+              }}
+            >
+              从上次继续刷题
+            </button>
+            <button
+              className="quiz-button-secondary"
+              onClick={() => {
+                if (!user) {
+                  alert('请先登录');
+                  return;
+                }
                 setView('practice');
                 setCurrentIndex(0);
               }}
             >
-              开始刷题
+              从头开始刷题
             </button>
             <button
               className="quiz-button-secondary"
@@ -914,6 +1219,10 @@ const App: React.FC = () => {
             <button
               className="quiz-button-secondary"
               onClick={() => {
+                if (!user) {
+                  alert('请先登录');
+                  return;
+                }
                 setView('import');
                 setParsedQuestions([]);
                 setImportErrors('');
@@ -946,7 +1255,7 @@ const App: React.FC = () => {
               }}
             >
               提示：收藏会保存到 localStorage，刷新页面也不会丢失。
-            </div>
+      </div>
           </div>
         </>
       )}
@@ -964,7 +1273,32 @@ const App: React.FC = () => {
             }}
           >
             <span className="quiz-subtitle">刷题</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {/* 出题模式切换 */}
+              <select
+                value={practiceMode}
+                onChange={(e) => {
+                  const newMode = e.target.value as PracticeMode;
+                  setPracticeMode(newMode);
+                  setCurrentIndex(0);
+                  // 如果切换到随机模式，生成随机序列
+                  if (newMode === 'random' && filteredQuestions.length > 0) {
+                    setShuffledIndices(generateShuffledIndices(filteredQuestions.length));
+                  }
+                }}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  border: '1px solid #d9d9d9',
+                  fontSize: 14,
+                  backgroundColor: '#ffffff',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value="sequential">顺序出题</option>
+                <option value="random">随机出题</option>
+              </select>
+              
               {/* 章节筛选下拉框 */}
               {availableChapters.length > 0 && (
                 <select
@@ -1004,37 +1338,54 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {filteredQuestions.length > 0 ? (
+          {filteredQuestions.length > 0 && currentQuestion ? (
             <div className="quiz-practice-layout">
               <div className="quiz-practice-left">
                 {renderQuestionCard(
-                  filteredQuestions[currentIndex],
+                  currentQuestion,
                   currentIndex,
                   filteredQuestions.length,
                   true // isPracticeView = true
                 )}
-                <button
-                  className="quiz-button-next"
-                  style={
-                    !answerRecords[filteredQuestions[currentIndex]?.id]
-                      ? {
-                          backgroundColor: '#d9d9d9',
-                          background: '#d9d9d9',
-                          boxShadow: 'none',
-                          cursor: 'not-allowed'
-                        }
-                      : undefined
-                  }
-                  disabled={!answerRecords[filteredQuestions[currentIndex]?.id]}
-                  onClick={handleNextPractice}
-                >
-                  {currentIndex < filteredQuestions.length - 1
-                    ? '下一题'
-                    : '完成本轮，返回首页'}
-                </button>
+                <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+                  <button
+                    className="quiz-button-secondary"
+                    style={{
+                      flex: 1,
+                      opacity: currentIndex === 0 ? 0.5 : 1,
+                      cursor: currentIndex === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                    disabled={currentIndex === 0}
+                    onClick={handlePrevPractice}
+                  >
+                    ← 上一题
+                  </button>
+                  <button
+                    className="quiz-button-next"
+                    style={{
+                      flex: 1,
+                      ...(
+                        !answerRecords[currentQuestion?.id]
+                          ? {
+                              backgroundColor: '#d9d9d9',
+                              background: '#d9d9d9',
+                              boxShadow: 'none',
+                              cursor: 'not-allowed'
+                            }
+                          : {}
+                      )
+                    }}
+                    disabled={!answerRecords[currentQuestion?.id]}
+                    onClick={handleNextPractice}
+                  >
+                    {currentIndex < filteredQuestions.length - 1
+                      ? '下一题 →'
+                      : '完成 ✓'}
+                  </button>
+                </div>
               </div>
               {/* 右侧：解析和考点复盘（仅在已作答时显示） */}
-              {answerRecords[filteredQuestions[currentIndex]?.id] && (
+              {answerRecords[currentQuestion?.id] && (
                 <div className="quiz-practice-right">
                   <div className="quiz-card">
                     <div className="quiz-subtitle" style={{ marginBottom: 16 }}>
@@ -1046,10 +1397,10 @@ const App: React.FC = () => {
                         考点复盘
                       </div>
                       <div style={{ color: '#333' }}>
-                        <div>• 书本章节：{filteredQuestions[currentIndex].review.chapter}</div>
-                        <div>• 考点：{filteredQuestions[currentIndex].review.concept}</div>
-                        <div>• 易混点：{filteredQuestions[currentIndex].review.confusionPoint}</div>
-                        <div>• 易错点：{filteredQuestions[currentIndex].review.errorPronePoint}</div>
+                        <div>• 书本章节：{currentQuestion.review.chapter}</div>
+                        <div>• 考点：{currentQuestion.review.concept}</div>
+                        <div>• 易混点：{currentQuestion.review.confusionPoint}</div>
+                        <div>• 易错点：{currentQuestion.review.errorPronePoint}</div>
                       </div>
                     </div>
                   </div>
@@ -1112,31 +1463,44 @@ const App: React.FC = () => {
                 false // isPracticeView = false
               )}
 
-              <button
-                className="quiz-button-next"
-                style={
-                  !answerRecords[
-                    wrongOrFavoriteQuestions[wrongBookIndex].id
-                  ]
-                    ? {
-                        backgroundColor: '#d9d9d9',
-                        background: '#d9d9d9',
-                        boxShadow: 'none',
-                        cursor: 'not-allowed'
-                      }
-                    : undefined
-                }
-                disabled={
-                  !answerRecords[
-                    wrongOrFavoriteQuestions[wrongBookIndex].id
-                  ]
-                }
-                onClick={handleNextWrongBook}
-              >
-                {wrongBookIndex < wrongOrFavoriteQuestions.length - 1
-                  ? '继续刷错题 / 收藏题'
-                  : '本轮错题已刷完，返回首页'}
-              </button>
+              <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+                <button
+                  className="quiz-button-secondary"
+                  style={{
+                    flex: 1,
+                    opacity: wrongBookIndex === 0 ? 0.5 : 1,
+                    cursor: wrongBookIndex === 0 ? 'not-allowed' : 'pointer'
+                  }}
+                  disabled={wrongBookIndex === 0}
+                  onClick={handlePrevWrongBook}
+                >
+                  ← 上一题
+                </button>
+                <button
+                  className="quiz-button-next"
+                  style={{
+                    flex: 1,
+                    ...(
+                      !answerRecords[wrongOrFavoriteQuestions[wrongBookIndex].id]
+                        ? {
+                            backgroundColor: '#d9d9d9',
+                            background: '#d9d9d9',
+                            boxShadow: 'none',
+                            cursor: 'not-allowed'
+                          }
+                        : {}
+                    )
+                  }}
+                  disabled={
+                    !answerRecords[wrongOrFavoriteQuestions[wrongBookIndex].id]
+                  }
+                  onClick={handleNextWrongBook}
+                >
+                  {wrongBookIndex < wrongOrFavoriteQuestions.length - 1
+                    ? '下一题 →'
+                    : '完成 ✓'}
+                </button>
+              </div>
             </>
           )}
         </>
