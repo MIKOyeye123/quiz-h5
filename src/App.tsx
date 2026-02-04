@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { parseDocxQuestions } from './utils/parseDocx';
 import type { ParsedQuestion } from './utils/parseDocx';
 import { supabase } from './lib/supabase';
@@ -6,7 +6,7 @@ import { Auth } from './components/Auth';
 import type { User } from '@supabase/supabase-js';
 import './App.css';
 
-type View = 'home' | 'practice' | 'wrongBook' | 'import' | 'library' | 'notes';
+type View = 'home' | 'practice' | 'wrongBook' | 'import' | 'library' | 'notes' | 'search' | 'chapterProgress';
 
 type Question = {
   id: string;
@@ -39,6 +39,7 @@ type ProgressData = {
   lastIndex: number; // 上次刷到的题目索引
   totalDone: number; // 总共做过的题数
   correctCount: number; // 正确题数
+  doneQuestionIds: string[]; // 已做题目的 ID 列表（用于去重计数）
   updatedAt: number; // 更新时间
 };
 
@@ -336,6 +337,7 @@ const App: React.FC = () => {
     lastIndex: 0,
     totalDone: 0,
     correctCount: 0,
+    doneQuestionIds: [],
     updatedAt: Date.now()
   });
   
@@ -355,6 +357,10 @@ const App: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedForImport, setSelectedForImport] = useState<Set<number>>(new Set());
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 搜索相关状态
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<Question[]>([]);
 
   // 初始化认证状态
   useEffect(() => {
@@ -435,6 +441,10 @@ const App: React.FC = () => {
       const stored = localStorage.getItem(PROGRESS_STORAGE_KEY);
       if (stored) {
         const data: ProgressData = JSON.parse(stored);
+        // 兼容旧版本数据（没有 doneQuestionIds 字段）
+        if (!data.doneQuestionIds) {
+          data.doneQuestionIds = [];
+        }
         setProgress(data);
       }
     } catch {
@@ -580,13 +590,19 @@ const App: React.FC = () => {
       // 作答后记录复习笔记
       recordReviewNote(question);
       
-      // 更新进度
-      setProgress(prevProgress => ({
-        lastIndex: currentIndex,
-        totalDone: prevProgress.totalDone + 1,
-        correctCount: prevProgress.correctCount + (isCorrect ? 1 : 0),
-        updatedAt: Date.now()
-      }));
+      // 更新进度统计（不再保存 lastIndex，因为我们改用 answerRecords 来判断进度）
+      setProgress(prevProgress => {
+        const isNewQuestion = !prevProgress.doneQuestionIds.includes(question.id);
+        return {
+          lastIndex: currentIndex, // 保留此字段用于兼容，但不再用于"从上次继续"的逻辑
+          totalDone: isNewQuestion ? prevProgress.totalDone + 1 : prevProgress.totalDone,
+          correctCount: prevProgress.correctCount + (isCorrect ? 1 : 0),
+          doneQuestionIds: isNewQuestion 
+            ? [...prevProgress.doneQuestionIds, question.id]
+            : prevProgress.doneQuestionIds,
+          updatedAt: Date.now()
+        };
+      });
       
       return newRecord;
     });
@@ -648,7 +664,7 @@ const App: React.FC = () => {
   const currentQuestion = getCurrentQuestion(currentIndex);
 
   // 生成随机题目序列
-  const generateShuffledIndices = (length: number): number[] => {
+  const generateShuffledIndices = useCallback((length: number): number[] => {
     const indices = Array.from({ length }, (_, i) => i);
     // Fisher-Yates 洗牌算法
     for (let i = indices.length - 1; i > 0; i--) {
@@ -656,7 +672,7 @@ const App: React.FC = () => {
       [indices[i], indices[j]] = [indices[j], indices[i]];
     }
     return indices;
-  };
+  }, []);
 
   // 章节筛选变化时，重置当前题索引和随机序列
   useEffect(() => {
@@ -667,7 +683,7 @@ const App: React.FC = () => {
         setShuffledIndices(generateShuffledIndices(filteredQuestions.length));
       }
     }
-  }, [selectedChapter, view, practiceMode, filteredQuestions.length]);
+  }, [selectedChapter, view, practiceMode, filteredQuestions.length, generateShuffledIndices]);
 
   // WrongBook 的索引容错：列表变化时重置
   useEffect(() => {
@@ -834,62 +850,75 @@ const App: React.FC = () => {
       
       alert(`成功导入 ${toImport.length} 道题目！`);
       setView('home');
-    } catch (error: any) {
+    } catch (error) {
       console.error('导入失败:', error);
-      setImportErrors(error.message || '导入失败，请重试');
+      setImportErrors(error instanceof Error ? error.message : '导入失败，请重试');
     }
   };
 
   // 删除题目
-  const handleDeleteQuestion = (questionId: string) => {
+  const handleDeleteQuestion = async (questionId: string) => {
     if (!confirm('确定要删除这道题目吗？')) {
       return;
     }
 
-    // 如果正在刷题，先检查当前题目是否会被删除
-    const isCurrentQuestion = view === 'practice' && filteredQuestions[currentIndex]?.id === questionId;
-    const currentChapter = view === 'practice' ? selectedChapter : null;
+    try {
+      // 从 Supabase 删除
+      const { error } = await supabase
+        .from('questions')
+        .delete()
+        .eq('id', questionId);
 
-    // 从题库中删除
-    setQuestions(prev => {
-      const newQuestions = prev.filter(q => q.id !== questionId);
-      
-      // 如果正在刷题，检查删除后的题目列表
-      if (isCurrentQuestion) {
-        const newFilteredQuestions = currentChapter === null
-          ? newQuestions
-          : newQuestions.filter(q => q.chapterNo === currentChapter);
+      if (error) throw error;
+
+      // 如果正在刷题，先检查当前题目是否会被删除
+      const isCurrentQuestion = view === 'practice' && currentQuestion?.id === questionId;
+      const currentChapter = view === 'practice' ? selectedChapter : null;
+
+      // 从本地状态中删除
+      setQuestions(prev => {
+        const newQuestions = prev.filter(q => q.id !== questionId);
         
-        if (newFilteredQuestions.length === 0) {
-          // 如果删除后没有题目了，返回首页
-          setTimeout(() => {
-            setView('home');
-            setCurrentIndex(0);
-          }, 0);
-        } else if (currentIndex >= newFilteredQuestions.length) {
-          // 如果索引越界，重置到最后一题
-          setTimeout(() => {
-            setCurrentIndex(newFilteredQuestions.length - 1);
-          }, 0);
+        // 如果正在刷题，检查删除后的题目列表
+        if (isCurrentQuestion) {
+          const newFilteredQuestions = currentChapter === null
+            ? newQuestions
+            : newQuestions.filter(q => q.chapterNo === currentChapter);
+          
+          if (newFilteredQuestions.length === 0) {
+            // 如果删除后没有题目了，返回首页
+            setTimeout(() => {
+              setView('home');
+              setCurrentIndex(0);
+            }, 0);
+          } else if (currentIndex >= newFilteredQuestions.length) {
+            // 如果索引越界，重置到最后一题
+            setTimeout(() => {
+              setCurrentIndex(newFilteredQuestions.length - 1);
+            }, 0);
+          }
         }
-      }
-      
-      return newQuestions;
-    });
+        
+        return newQuestions;
+      });
 
-    // 从收藏中删除
-    setFavorites(prev => {
-      const next = new Set(prev);
-      next.delete(questionId);
-      return next;
-    });
+      // 从收藏中删除
+      setFavorites(prev => {
+        const next = new Set(prev);
+        next.delete(questionId);
+        return next;
+      });
 
-    // 从答案记录中删除
-    setAnswerRecords(prev => {
-      const next = { ...prev };
-      delete next[questionId];
-      return next;
-    });
+      // 从答案记录中删除
+      setAnswerRecords(prev => {
+        const next = { ...prev };
+        delete next[questionId];
+        return next;
+      });
+    } catch (error) {
+      console.error('删除失败:', error);
+      alert('删除失败：' + (error instanceof Error ? error.message : '请重试'));
+    }
   };
 
   const renderQuestionCard = (
@@ -1151,6 +1180,7 @@ const App: React.FC = () => {
                   正确率：{progress.totalDone > 0 
                     ? Math.round((progress.correctCount / progress.totalDone) * 100) 
                     : 0}%
+                  {questions.length === 0 && ' (请先导入题目)'}
                 </div>
               </div>
 
@@ -1183,13 +1213,27 @@ const App: React.FC = () => {
                   alert('请先登录');
                   return;
                 }
-                setView('practice');
-                // 从上次进度继续
-                if (progress.lastIndex > 0 && progress.lastIndex < filteredQuestions.length) {
-                  setCurrentIndex(progress.lastIndex);
-                } else {
-                  setCurrentIndex(0);
+                // 从上次进度继续（不清空答案记录）
+                // 找到第一道未作答的题目
+                let nextIndex = 0;
+                for (let i = 0; i < questions.length; i++) {
+                  if (!answerRecords[questions[i].id]) {
+                    nextIndex = i;
+                    break;
+                  }
                 }
+                
+                // 如果所有题目都已作答，从头开始
+                if (nextIndex === 0 && questions.length > 0 && answerRecords[questions[0].id]) {
+                  if (confirm('所有题目已完成！是否从头开始复习？')) {
+                    nextIndex = 0;
+                  } else {
+                    return;
+                  }
+                }
+                
+                setCurrentIndex(nextIndex);
+                setView('practice');
               }}
             >
               从上次继续刷题
@@ -1201,8 +1245,23 @@ const App: React.FC = () => {
                   alert('请先登录');
                   return;
                 }
-                setView('practice');
+                // 从头开始刷题（清空所有答案记录）
+                if (Object.keys(answerRecords).length > 0) {
+                  if (confirm('从头开始将清空所有答题记录，确定要继续吗？')) {
+                    setAnswerRecords({});
+                    setProgress({
+                      lastIndex: 0,
+                      totalDone: 0,
+                      correctCount: 0,
+                      doneQuestionIds: [],
+                      updatedAt: Date.now()
+                    });
+                  } else {
+                    return;
+                  }
+                }
                 setCurrentIndex(0);
+                setView('practice');
               }}
             >
               从头开始刷题
@@ -1247,6 +1306,24 @@ const App: React.FC = () => {
             >
               复习笔记
             </button>
+            <button
+              className="quiz-button-secondary"
+              onClick={() => {
+                setView('search');
+                setSearchKeyword('');
+                setSearchResults([]);
+              }}
+            >
+              🔍 搜索题目
+            </button>
+            <button
+              className="quiz-button-secondary"
+              onClick={() => {
+                setView('chapterProgress');
+              }}
+            >
+              📊 章节进度
+            </button>
             <div
               style={{
                 marginTop: 8,
@@ -1279,6 +1356,9 @@ const App: React.FC = () => {
                 value={practiceMode}
                 onChange={(e) => {
                   const newMode = e.target.value as PracticeMode;
+                  if (currentIndex > 0 && !confirm('切换出题模式将从第一题重新开始，确定要切换吗？')) {
+                    return;
+                  }
                   setPracticeMode(newMode);
                   setCurrentIndex(0);
                   // 如果切换到随机模式，生成随机序列
@@ -1338,75 +1418,89 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          {filteredQuestions.length > 0 && currentQuestion ? (
-            <div className="quiz-practice-layout">
-              <div className="quiz-practice-left">
-                {renderQuestionCard(
-                  currentQuestion,
-                  currentIndex,
-                  filteredQuestions.length,
-                  true // isPracticeView = true
-                )}
-                <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-                  <button
-                    className="quiz-button-secondary"
-                    style={{
-                      flex: 1,
-                      opacity: currentIndex === 0 ? 0.5 : 1,
-                      cursor: currentIndex === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                    disabled={currentIndex === 0}
-                    onClick={handlePrevPractice}
-                  >
-                    ← 上一题
-                  </button>
-                  <button
-                    className="quiz-button-next"
-                    style={{
-                      flex: 1,
-                      ...(
-                        !answerRecords[currentQuestion?.id]
-                          ? {
-                              backgroundColor: '#d9d9d9',
-                              background: '#d9d9d9',
-                              boxShadow: 'none',
-                              cursor: 'not-allowed'
-                            }
-                          : {}
-                      )
-                    }}
-                    disabled={!answerRecords[currentQuestion?.id]}
-                    onClick={handleNextPractice}
-                  >
-                    {currentIndex < filteredQuestions.length - 1
-                      ? '下一题 →'
-                      : '完成 ✓'}
-                  </button>
+          {filteredQuestions.length > 0 ? (
+            currentQuestion ? (
+              <div className="quiz-practice-layout">
+                <div className="quiz-practice-left">
+                  {renderQuestionCard(
+                    currentQuestion,
+                    currentIndex,
+                    filteredQuestions.length,
+                    true // isPracticeView = true
+                  )}
+                  <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+                    <button
+                      className="quiz-button-secondary"
+                      style={{
+                        flex: 1,
+                        opacity: currentIndex === 0 ? 0.5 : 1,
+                        cursor: currentIndex === 0 ? 'not-allowed' : 'pointer'
+                      }}
+                      disabled={currentIndex === 0}
+                      onClick={handlePrevPractice}
+                    >
+                      ← 上一题
+                    </button>
+                    <button
+                      className="quiz-button-next"
+                      style={{
+                        flex: 1,
+                        ...(
+                          !answerRecords[currentQuestion?.id]
+                            ? {
+                                backgroundColor: '#d9d9d9',
+                                background: '#d9d9d9',
+                                boxShadow: 'none',
+                                cursor: 'not-allowed'
+                              }
+                            : {}
+                        )
+                      }}
+                      disabled={!answerRecords[currentQuestion?.id]}
+                      onClick={handleNextPractice}
+                    >
+                      {currentIndex < filteredQuestions.length - 1
+                        ? '下一题 →'
+                        : '完成 ✓'}
+                    </button>
+                  </div>
                 </div>
-              </div>
-              {/* 右侧：解析和考点复盘（仅在已作答时显示） */}
-              {answerRecords[currentQuestion?.id] && (
-                <div className="quiz-practice-right">
-                  <div className="quiz-card">
-                    <div className="quiz-subtitle" style={{ marginBottom: 16 }}>
-                      详细解析
-                    </div>
-                    {/* 考点复盘模块 */}
-                    <div className="quiz-review-box">
-                      <div className="quiz-review-title">
-                        考点复盘
+                {/* 右侧：解析和考点复盘（仅在已作答时显示） */}
+                {answerRecords[currentQuestion?.id] && (
+                  <div className="quiz-practice-right">
+                    <div className="quiz-card">
+                      <div className="quiz-subtitle" style={{ marginBottom: 16 }}>
+                        详细解析
                       </div>
-                      <div style={{ color: '#333' }}>
-                        <div>• 书本章节：{currentQuestion.review.chapter}</div>
-                        <div>• 考点：{currentQuestion.review.concept}</div>
-                        <div>• 易混点：{currentQuestion.review.confusionPoint}</div>
-                        <div>• 易错点：{currentQuestion.review.errorPronePoint}</div>
+                      {/* 考点复盘模块 */}
+                      <div className="quiz-review-box">
+                        <div className="quiz-review-title">
+                          考点复盘
+                        </div>
+                        <div style={{ color: '#333' }}>
+                          <div>• 书本章节：{currentQuestion.review.chapter}</div>
+                          <div>• 考点：{currentQuestion.review.concept}</div>
+                          <div>• 易混点：{currentQuestion.review.confusionPoint}</div>
+                          <div>• 易错点：{currentQuestion.review.errorPronePoint}</div>
+                        </div>
                       </div>
                     </div>
                   </div>
+                )}
+              </div>
+            ) : (
+              <div className="quiz-card">
+                <div style={{ fontSize: 15, color: '#666', lineHeight: 1.6, textAlign: 'center', padding: '20px 0' }}>
+                  题目加载出错，请返回首页重试。
                 </div>
-              )}
-            </div>
+                <button
+                  className="quiz-button-secondary"
+                  onClick={() => setView('home')}
+                >
+                  返回首页
+                </button>
+              </div>
+            )
           ) : (
             <div className="quiz-card">
               <div style={{ fontSize: 15, color: '#666', lineHeight: 1.6 }}>
@@ -2037,6 +2131,355 @@ const App: React.FC = () => {
                     </div>
                   </div>
                 ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {view === 'search' && (
+        <>
+          <div
+            style={{
+              marginBottom: 8,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <span className="quiz-subtitle">搜索题目</span>
+            <span
+              className="quiz-link-small"
+              onClick={() => {
+                setView('home');
+              }}
+            >
+              ‹ 返回首页
+            </span>
+          </div>
+
+          <div className="quiz-card">
+            <div style={{ marginBottom: 16 }}>
+              <input
+                type="text"
+                value={searchKeyword}
+                onChange={(e) => {
+                  const keyword = e.target.value;
+                  setSearchKeyword(keyword);
+                  
+                  // 实时搜索
+                  if (keyword.trim()) {
+                    const results = questions.filter(q => 
+                      q.question.toLowerCase().includes(keyword.toLowerCase()) ||
+                      q.options.A.toLowerCase().includes(keyword.toLowerCase()) ||
+                      q.options.B.toLowerCase().includes(keyword.toLowerCase()) ||
+                      q.options.C.toLowerCase().includes(keyword.toLowerCase()) ||
+                      q.options.D.toLowerCase().includes(keyword.toLowerCase()) ||
+                      (q.chapterTitle && q.chapterTitle.toLowerCase().includes(keyword.toLowerCase())) ||
+                      q.review.concept.toLowerCase().includes(keyword.toLowerCase())
+                    );
+                    setSearchResults(results);
+                  } else {
+                    setSearchResults([]);
+                  }
+                }}
+                placeholder="输入关键词搜索题目、选项、章节或考点..."
+                style={{
+                  width: '100%',
+                  padding: '12px 16px',
+                  borderRadius: 8,
+                  border: '1px solid #d9d9d9',
+                  fontSize: 15,
+                  boxSizing: 'border-box'
+                }}
+              />
+            </div>
+
+            {searchKeyword && (
+              <div style={{ marginBottom: 12, fontSize: 14, color: '#666' }}>
+                找到 {searchResults.length} 道题目
+              </div>
+            )}
+
+            {searchResults.length > 0 ? (
+              <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+                {searchResults.map((q) => {
+                  const isAnswered = !!answerRecords[q.id];
+                  const isCorrect = isAnswered && answerRecords[q.id].isCorrect;
+                  
+                  return (
+                    <div
+                      key={q.id}
+                      style={{
+                        padding: '14px',
+                        marginBottom: 12,
+                        borderRadius: 8,
+                        border: '1px solid #e8e8e8',
+                        backgroundColor: isAnswered 
+                          ? (isCorrect ? '#f6ffed' : '#fff1f0')
+                          : '#fafafa',
+                        cursor: 'pointer'
+                      }}
+                      onClick={() => {
+                        // 跳转到该题目
+                        const questionIndex = questions.findIndex(question => question.id === q.id);
+                        if (questionIndex !== -1) {
+                          setCurrentIndex(questionIndex);
+                          setSelectedChapter(null); // 清除章节筛选
+                          setView('practice');
+                        }
+                      }}
+                    >
+                      <div style={{ marginBottom: 8 }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '2px 8px',
+                            borderRadius: 4,
+                            backgroundColor: '#e6f7ff',
+                            color: '#1677ff',
+                            fontSize: 12,
+                            fontWeight: 500,
+                            marginRight: 8
+                          }}
+                        >
+                          第{q.chapterNo}章
+                        </span>
+                        {isAnswered && (
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '2px 8px',
+                              borderRadius: 4,
+                              backgroundColor: isCorrect ? '#d9f7be' : '#ffccc7',
+                              color: isCorrect ? '#52c41a' : '#cf1322',
+                              fontSize: 12,
+                              fontWeight: 500
+                            }}
+                          >
+                            {isCorrect ? '✓ 已答对' : '✗ 已答错'}
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          color: '#333',
+                          lineHeight: 1.6,
+                          marginBottom: 6
+                        }}
+                      >
+                        {q.question}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#999' }}>
+                        考点：{q.review.concept}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : searchKeyword ? (
+              <div style={{ textAlign: 'center', padding: '40px 20px', color: '#999' }}>
+                未找到相关题目
+              </div>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '40px 20px', color: '#999' }}>
+                请输入关键词开始搜索
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {view === 'chapterProgress' && (
+        <>
+          <div
+            style={{
+              marginBottom: 8,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <span className="quiz-subtitle">章节进度</span>
+            <span
+              className="quiz-link-small"
+              onClick={() => {
+                setView('home');
+              }}
+            >
+              ‹ 返回首页
+            </span>
+          </div>
+
+          {availableChapters.length === 0 ? (
+            <div className="quiz-card">
+              <div style={{ fontSize: 15, color: '#666', lineHeight: 1.6 }}>
+                题库为空，请先导入题目。
+              </div>
+            </div>
+          ) : (
+            <div>
+              {availableChapters.map(chapterNo => {
+                const chapterQuestions = questions.filter(q => q.chapterNo === chapterNo);
+                const chapterTitle = chapterQuestions[0]?.chapterTitle;
+                const totalCount = chapterQuestions.length;
+                
+                // 计算该章节的完成情况
+                const doneQuestions = chapterQuestions.filter(q => answerRecords[q.id]);
+                const doneCount = doneQuestions.length;
+                const correctCount = doneQuestions.filter(q => answerRecords[q.id].isCorrect).length;
+                const wrongCount = doneCount - correctCount;
+                const donePercent = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+                const correctPercent = doneCount > 0 ? Math.round((correctCount / doneCount) * 100) : 0;
+
+                return (
+                  <div key={chapterNo} className="quiz-card" style={{ marginBottom: 16 }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        marginBottom: 12
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize: 18,
+                            fontWeight: 600,
+                            marginBottom: 4,
+                            color: '#333'
+                          }}
+                        >
+                          第 {chapterNo} 章
+                          {chapterTitle && ` - ${chapterTitle}`}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#999' }}>
+                          共 {totalCount} 道题目
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setSelectedChapter(chapterNo);
+                          setCurrentIndex(0);
+                          setView('practice');
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: 6,
+                          border: '1px solid #1677ff',
+                          backgroundColor: '#ffffff',
+                          color: '#1677ff',
+                          fontSize: 13,
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap'
+                        }}
+                      >
+                        开始刷题
+                      </button>
+                    </div>
+
+                    {/* 进度条 */}
+                    <div style={{ marginBottom: 12 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          marginBottom: 6,
+                          fontSize: 13,
+                          color: '#666'
+                        }}
+                      >
+                        <span>完成进度</span>
+                        <span>{doneCount} / {totalCount} ({donePercent}%)</span>
+                      </div>
+                      <div
+                        style={{
+                          width: '100%',
+                          height: 8,
+                          backgroundColor: '#f0f0f0',
+                          borderRadius: 4,
+                          overflow: 'hidden'
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: `${donePercent}%`,
+                            height: '100%',
+                            background: 'linear-gradient(90deg, #1677ff 0%, #69b1ff 100%)',
+                            transition: 'width 0.3s ease'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 统计信息 */}
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(3, 1fr)',
+                        gap: 12
+                      }}
+                    >
+                      <div
+                        style={{
+                          padding: '12px',
+                          borderRadius: 6,
+                          backgroundColor: '#f0f7ff',
+                          textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontSize: 20, fontWeight: 600, color: '#1677ff', marginBottom: 4 }}>
+                          {doneCount}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#666' }}>已完成</div>
+                      </div>
+                      <div
+                        style={{
+                          padding: '12px',
+                          borderRadius: 6,
+                          backgroundColor: '#f6ffed',
+                          textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontSize: 20, fontWeight: 600, color: '#52c41a', marginBottom: 4 }}>
+                          {correctCount}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#666' }}>答对</div>
+                      </div>
+                      <div
+                        style={{
+                          padding: '12px',
+                          borderRadius: 6,
+                          backgroundColor: '#fff1f0',
+                          textAlign: 'center'
+                        }}
+                      >
+                        <div style={{ fontSize: 20, fontWeight: 600, color: '#ff4d4f', marginBottom: 4 }}>
+                          {wrongCount}
+                        </div>
+                        <div style={{ fontSize: 12, color: '#666' }}>答错</div>
+                      </div>
+                    </div>
+
+                    {doneCount > 0 && (
+                      <div
+                        style={{
+                          marginTop: 12,
+                          padding: '8px 12px',
+                          borderRadius: 6,
+                          backgroundColor: '#fafafa',
+                          fontSize: 13,
+                          color: '#666',
+                          textAlign: 'center'
+                        }}
+                      >
+                        正确率：{correctPercent}%
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </>

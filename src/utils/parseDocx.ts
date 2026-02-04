@@ -118,7 +118,7 @@ function parseQuestion(blockText: string, index: number): ParsedQuestion {
     
     for (const line of optionLines) {
       // 检测选项标记（A. / A、/ • A / - A / * A 等，支持多种格式）
-      const optionMatch = line.match(/^[•\-\*\s]*([A-D])[\.、：:\s]+(.+)$/);
+      const optionMatch = line.match(/^[•\-*\s]*([A-D])[.、：:\s]+(.+)$/);
       if (optionMatch) {
         // 保存上一个选项的解析
         if (currentOption && currentExplanation) {
@@ -150,7 +150,7 @@ function parseQuestion(blockText: string, index: number): ParsedQuestion {
         } else {
           currentExplanation = line;
         }
-      } else if (currentOption && line && !line.match(/^[A-D][\.、：:]/)) {
+      } else if (currentOption && line && !line.match(/^[A-D][.、：:]/)) {
         // 如果当前行不是新选项，且不是解析标记，可能是选项文本的延续或解析的开始
         // 检查是否包含"正确"关键字
         if (line.includes('正确') && !question.answer) {

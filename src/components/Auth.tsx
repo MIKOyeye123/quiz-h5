@@ -45,8 +45,8 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
           onAuthSuccess();
         }, 1000);
       }
-    } catch (err: any) {
-      setError(err.message || '操作失败，请重试');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '操作失败，请重试');
     } finally {
       setLoading(false);
     }
@@ -68,8 +68,8 @@ export const Auth: React.FC<AuthProps> = ({ onAuthSuccess }) => {
       if (magicLinkError) throw magicLinkError;
 
       setMessage('已发送 Magic Link 到您的邮箱，请查收邮件并点击链接登录。');
-    } catch (err: any) {
-      setError(err.message || '发送失败，请重试');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '发送失败，请重试');
     } finally {
       setLoading(false);
     }
